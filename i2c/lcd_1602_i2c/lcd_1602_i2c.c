@@ -144,7 +144,7 @@ int main() {
 
     lcd_init();
 
-    static uint8_t *message[] =
+    static char *message[] =
             {
                     "RP2040 by", "Raspberry Pi",
                     "A brand new", "microcontroller",
@@ -163,7 +163,5 @@ int main() {
             lcd_clear();
         }
     }
-
-    return 0;
 #endif
 }

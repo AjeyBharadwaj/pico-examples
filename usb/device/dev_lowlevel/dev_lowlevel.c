@@ -26,8 +26,8 @@
 // Device descriptors
 #include "dev_lowlevel.h"
 
-#define usb_hw_set hw_set_alias(usb_hw)
-#define usb_hw_clear hw_clear_alias(usb_hw)
+#define usb_hw_set ((usb_hw_t *)hw_set_alias_untyped(usb_hw))
+#define usb_hw_clear ((usb_hw_t *)hw_clear_alias_untyped(usb_hw))
 
 // Function prototypes for our device specific endpoint handlers defined
 // later on
@@ -113,7 +113,7 @@ struct usb_endpoint_configuration *usb_get_endpoint_configuration(uint8_t addr) 
  */
 uint8_t usb_prepare_string_descriptor(const unsigned char *str) {
     // 2 for bLength + bDescriptorType + strlen * 2 because string is unicode. i.e. other byte will be 0
-    uint8_t bLength = 2 + (strlen(str) * 2);
+    uint8_t bLength = 2 + (strlen((const char *)str) * 2);
     static const uint8_t bDescriptorType = 0x03;
 
     volatile uint8_t *buf = &ep0_buf[0];
@@ -264,13 +264,13 @@ void usb_start_transfer(struct usb_endpoint_configuration *ep, uint8_t *buf, uin
  * @brief Send device descriptor to host
  *
  */
-void usb_handle_device_descriptor(void) {
+void usb_handle_device_descriptor(volatile struct usb_setup_packet *pkt) {
     const struct usb_device_descriptor *d = dev_config.device_descriptor;
     // EP0 in
     struct usb_endpoint_configuration *ep = usb_get_endpoint_configuration(EP0_IN_ADDR);
     // Always respond with pid 1
     ep->next_pid = 1;
-    usb_start_transfer(ep, (uint8_t *) d, sizeof(struct usb_device_descriptor));
+    usb_start_transfer(ep, (uint8_t *) d, MIN(sizeof(struct usb_device_descriptor), pkt->wLength));
 }
 
 /**
@@ -305,7 +305,7 @@ void usb_handle_config_descriptor(volatile struct usb_setup_packet *pkt) {
     // Send data
     // Get len by working out end of buffer subtract start of buffer
     uint32_t len = (uint32_t) buf - (uint32_t) &ep0_buf[0];
-    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), &ep0_buf[0], len);
+    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), &ep0_buf[0], MIN(len, pkt->wLength));
 }
 
 /**
@@ -337,7 +337,14 @@ void usb_handle_string_descriptor(volatile struct usb_setup_packet *pkt) {
         len = usb_prepare_string_descriptor(dev_config.descriptor_strings[i - 1]);
     }
 
-    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), &ep0_buf[0], len);
+    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), &ep0_buf[0], MIN(len, pkt->wLength));
+}
+
+/**
+ * @brief Sends a zero length status packet back to the host.
+ */
+void usb_acknowledge_out_request(void) {
+    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), NULL, 0);
 }
 
 /**
@@ -354,7 +361,7 @@ void usb_set_device_address(volatile struct usb_setup_packet *pkt) {
     printf("Set address %d\r\n", dev_addr);
     // Will set address in the callback phase
     should_set_address = true;
-    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), NULL, 0);
+    usb_acknowledge_out_request();
 }
 
 /**
@@ -366,7 +373,7 @@ void usb_set_device_address(volatile struct usb_setup_packet *pkt) {
 void usb_set_device_configuration(volatile struct usb_setup_packet *pkt) {
     // Only one configuration so just acknowledge the request
     printf("Device Enumerated\r\n");
-    usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), NULL, 0);
+    usb_acknowledge_out_request();
     configured = true;
 }
 
@@ -388,6 +395,7 @@ void usb_handle_setup_packet(void) {
         } else if (req == USB_REQUEST_SET_CONFIGURATION) {
             usb_set_device_configuration(pkt);
         } else {
+            usb_acknowledge_out_request();
             printf("Other OUT request (0x%x)\r\n", pkt->bRequest);
         }
     } else if (req_direction == USB_DIR_IN) {
@@ -396,7 +404,7 @@ void usb_handle_setup_packet(void) {
 
             switch (descriptor_type) {
                 case USB_DT_DEVICE:
-                    usb_handle_device_descriptor();
+                    usb_handle_device_descriptor(pkt);
                     printf("GET DEVICE DESCRIPTOR\r\n");
                     break;
 
@@ -567,6 +575,4 @@ int main(void) {
     while (1) {
         tight_loop_contents();
     }
-
-    return 0;
 }
